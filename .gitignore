@@ -1,0 +1,45 @@
+# Environment
+.env
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Reports and outputs
+reports/
+eval_data/
+*.pdf
+*.json
+*_diagnostic.json
+*_agent1.json
+*_agent2.json
+*_agent4.json
+*_annotation_template.json
+ground_truth.json
+qualitative_scores.json
+classification_metrics.json
+predictions.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
