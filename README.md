@@ -1,7 +1,4 @@
 # SEC Risk Intelligence System
-**FE 524 — Prompt Engineering Lab for Business Applications**  
-Group Atlanta: Amaan Shaikh · Sakshi Kadam · Tanishka Dighe · Abhilash Athili
-
 ---
 
 ## Overview
