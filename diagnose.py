@@ -9,8 +9,8 @@ Usage:
 
 import sys
 import json
-from dotenv import load_dotenv
-load_dotenv()
+from utils import load_env
+load_env()
 
 import agent1_fetcher
 

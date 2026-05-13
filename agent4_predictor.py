@@ -43,9 +43,8 @@ from datetime import datetime, date, timedelta
 from pathlib import Path
 
 from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv("../.env", override=True)
+from utils import load_env, parse_llm_json, repair_truncated_json_array
+load_env()
 
 CLIENT = OpenAI()
 MODEL  = "gpt-4.1-mini"
@@ -84,7 +83,8 @@ CREATE TABLE IF NOT EXISTS predictions (
     backtest_status         TEXT    DEFAULT 'PENDING',
     backtest_evidence       TEXT,
     backtest_date           TEXT,
-    backtest_filing_date    TEXT
+    backtest_filing_date    TEXT,
+    UNIQUE (ticker, filing_date, risk_title)
 );
 
 CREATE TABLE IF NOT EXISTS track_record (
@@ -195,8 +195,8 @@ def generate_predictions(analyzer_output: dict) -> list[dict]:
             {"role": "user",   "content": rank_payload},
         ],
     )
-    rank_raw = rank_resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-    ranked   = json.loads(rank_raw)
+    rank_raw = rank_resp.choices[0].message.content
+    ranked   = parse_llm_json(rank_raw)
 
     # Merge tier info back into actionable list
     tier_map = {r["risk_title"]: r for r in ranked}
@@ -227,8 +227,8 @@ def generate_predictions(analyzer_output: dict) -> list[dict]:
             {"role": "user",   "content": pred_payload},
         ],
     )
-    pred_raw    = pred_resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-    predictions = json.loads(pred_raw)
+    pred_raw    = pred_resp.choices[0].message.content
+    predictions = parse_llm_json(pred_raw)
     print(f"[Agent 4] Generated {len(predictions)} predictions.")
 
     # Log probability spread for diagnostics
@@ -252,15 +252,8 @@ def save_predictions(ticker: str, filing_date: str, predictions: list[dict],
     inserted = 0
     for p in predictions:
         title = p.get("risk_title", "")
-        existing = conn.execute(
-            "SELECT id FROM predictions WHERE ticker=? AND filing_date=? AND risk_title=?",
-            (ticker, filing_date, title)
-        ).fetchone()
-        if existing:
-            continue
-
-        conn.execute("""
-            INSERT INTO predictions
+        result = conn.execute("""
+            INSERT OR IGNORE INTO predictions
               (ticker, filing_date, risk_title, change_type, severity,
                impact_type, probability, timeframe, confidence, reasoning, created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)
@@ -277,7 +270,7 @@ def save_predictions(ticker: str, filing_date: str, predictions: list[dict],
             p.get("reasoning", ""),
             now,
         ))
-        inserted += 1
+        inserted += result.rowcount
 
     conn.commit()
     conn.close()
@@ -656,10 +649,13 @@ def get_predictions_for_report(ticker: str, filing_date: str) -> list[dict]:
 # Backtest attempt helper
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _attempt_backtest(ticker: str) -> None:
+def _attempt_backtest(ticker: str, cik: str = None) -> None:
     """
     Find ALL PENDING predictions for this ticker and attempt to backtest them.
     Skips filings less than BACKTEST_MIN_AGE_DAYS old.
+
+    Fix 1: accepts a pre-resolved CIK from Agent 1 output so we don't re-fetch
+    company_tickers.json on every run.
     """
     import requests
 
@@ -701,17 +697,19 @@ def _attempt_backtest(ticker: str) -> None:
     print(f"[Agent 4] Found {len(to_process)} filing(s) eligible for backtesting.")
 
     try:
-        cik_resp = requests.get(f"{SEC_BASE}/files/company_tickers.json",
-                                headers=HEADERS, timeout=15)
-        cik_resp.raise_for_status()
-        cik = None
-        for entry in cik_resp.json().values():
-            if entry["ticker"].upper() == ticker.upper():
-                cik = str(entry["cik_str"]).zfill(10)
-                break
         if not cik:
-            print(f"[Agent 4] Could not resolve CIK for {ticker} — skipping backtest.")
-            return
+            # CIK not passed through — fall back to fetching (one extra network call)
+            cik_resp = requests.get(f"{SEC_BASE}/files/company_tickers.json",
+                                    headers=HEADERS, timeout=15)
+            cik_resp.raise_for_status()
+            cik = None
+            for entry in cik_resp.json().values():
+                if entry["ticker"].upper() == ticker.upper():
+                    cik = str(entry["cik_str"]).zfill(10)
+                    break
+            if not cik:
+                print(f"[Agent 4] Could not resolve CIK for {ticker} — skipping backtest.")
+                return
 
         for filing_date in to_process:
             print(f"[Agent 4] Fetching 10-Qs after {filing_date} for {ticker}...")
@@ -754,6 +752,7 @@ def run(analyzer_output: dict, run_backtest: bool = True) -> dict:
     """
     ticker       = analyzer_output["ticker"]
     filing_date  = analyzer_output["newer_date"]
+    cik          = analyzer_output.get("cik", "")  # Fix 1: passed from Agent 1 via Agent 2
 
     print(f"\n[Agent 4] === Prediction & Backtesting for {ticker} ({filing_date}) ===\n")
 
@@ -762,7 +761,7 @@ def run(analyzer_output: dict, run_backtest: bool = True) -> dict:
         save_predictions(ticker, filing_date, predictions, analyzer_output)
 
     if run_backtest:
-        _attempt_backtest(ticker)
+        _attempt_backtest(ticker, cik=cik)
 
     saved_preds  = get_predictions_for_report(ticker, filing_date)
     track        = compute_track_record()

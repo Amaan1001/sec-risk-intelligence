@@ -19,12 +19,16 @@ import json
 import math
 import sys
 from difflib import SequenceMatcher
+from itertools import zip_longest
 from pathlib import Path
 from collections import defaultdict
 
 import agent1_fetcher
 import agent2_analyzer
 import agent3_synthesizer
+
+from utils import load_env
+load_env()
 
 
 # ── 1. Generate predictions ───────────────────────────────────────────────────
@@ -90,6 +94,19 @@ def _fuzzy_match(query: str, candidates: dict, threshold: float = FUZZY_THRESHOL
 
 def compute_classification_metrics(predictions: list[str], ground_truth: list[str]) -> dict:
     """Compute per-class Precision, Recall, F1 and macro averages."""
+    _SENTINEL = object()
+    if len(predictions) != len(ground_truth):
+        mismatched = [
+            (i, p, g)
+            for i, (p, g) in enumerate(zip_longest(predictions, ground_truth, fillvalue=_SENTINEL))
+            if p is _SENTINEL or g is _SENTINEL
+        ]
+        raise AssertionError(
+            f"predictions ({len(predictions)}) and ground_truth ({len(ground_truth)}) "
+            f"have different lengths. First mismatched index: {mismatched[0][0] if mismatched else '?'}. "
+            "This usually means a fuzzy-match failure left one list longer — check 'not_found' count."
+        )
+
     tp = defaultdict(int)
     fp = defaultdict(int)
     fn = defaultdict(int)

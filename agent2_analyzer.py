@@ -23,8 +23,8 @@ FIX LOG:
 import json
 from openai import OpenAI
 
-from dotenv import load_dotenv
-load_dotenv("../.env", override=True)
+from utils import load_env, parse_llm_json, repair_truncated_json_array
+load_env()
 
 CLIENT = OpenAI()
 MODEL = "gpt-4.1-mini"
@@ -123,8 +123,8 @@ def _extract_chunk(chunk_text: str, filing_label: str, chunk_num: int, total_chu
             },
         ],
     )
-    raw = resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-    risks = json.loads(raw)
+    raw = resp.choices[0].message.content
+    risks = parse_llm_json(raw)
     print(f"[Agent 2]     Chunk {chunk_num}: found {len(risks)} risks.")
     return risks
 
@@ -151,8 +151,8 @@ def extract_risk_list(section_text: str, filing_label: str) -> list[dict]:
                 },
             ],
         )
-        raw = resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-        risks = json.loads(raw)
+        raw = resp.choices[0].message.content
+        risks = parse_llm_json(raw)
         print(f"[Agent 2]   Found {len(risks)} risks in {filing_label} filing.")
         return risks
 
@@ -201,8 +201,8 @@ Respond ONLY with a JSON array. No markdown fences, no preamble."""
                 {"role": "user", "content": json.dumps(risks, indent=2)},
             ],
         )
-        raw = resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-        return json.loads(raw)
+        raw = resp.choices[0].message.content
+        return parse_llm_json(raw)
     except Exception as e:
         print(f"[Agent 2]   Warning: risk-list dedup failed ({e}) — using raw list.")
         return risks
@@ -224,13 +224,30 @@ def compare_risk_lists(older_risks: list[dict], newer_risks: list[dict]) -> list
             {"role": "user", "content": payload},
         ],
     )
-    raw = resp.choices[0].message.content.strip()
-    raw = raw.strip("```json").strip("```").strip()
-    if not raw.endswith("]"):
-        last_brace = raw.rfind("}")
-        if last_brace != -1:
-            raw = raw[:last_brace+1] + "\n]"
-    changes = json.loads(raw)
+    raw = resp.choices[0].message.content
+
+    # Fix 2: robust truncation repair with one retry instead of brittle string append
+    changes = repair_truncated_json_array(raw)
+    if not changes:
+        print("[Agent 2]   Warning: initial JSON parse failed — retrying with repair prompt...")
+        retry_resp = CLIENT.chat.completions.create(
+            model=MODEL,
+            max_tokens=16000,
+            messages=[
+                {"role": "system", "content": STEP2_SYSTEM},
+                {"role": "user", "content": payload},
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": (
+                    "Your response appears to have been cut off or contains invalid JSON. "
+                    "Please output ONLY the complete, valid JSON array from the beginning. "
+                    "No markdown fences, no preamble."
+                )},
+            ],
+        )
+        changes = repair_truncated_json_array(retry_resp.choices[0].message.content)
+        if not changes:
+            raise ValueError("Agent 2 compare_risk_lists: could not obtain valid JSON after retry.")
+
     print(f"[Agent 2]   Classified {len(changes)} risk entries.")
     return changes
 
@@ -266,8 +283,8 @@ def deduplicate_changes(changes: list[dict]) -> list[dict]:
             {"role": "user", "content": json.dumps(changes, indent=2)},
         ],
     )
-    raw = resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-    deduped = json.loads(raw)
+    raw = resp.choices[0].message.content
+    deduped = parse_llm_json(raw)
     print(f"[Agent 2]   Reduced to {len(deduped)} entries after deduplication.")
     return deduped
 
@@ -304,8 +321,8 @@ def consolidate_new_risks(changes: list[dict], older_risks: list[dict]) -> list[
                 {"role": "user",   "content": payload},
             ],
         )
-        raw = resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-        consolidated = json.loads(raw)
+        raw = resp.choices[0].message.content
+        consolidated = parse_llm_json(raw)
 
         # Count reclassifications for logging
         reclassified = sum(
@@ -367,6 +384,7 @@ def run(fetcher_output: dict) -> dict:
 
     return {
         "ticker":        ticker,
+        "cik":           fetcher_output.get("cik", ""),
         "newer_date":    newer["date"],
         "older_date":    older["date"],
         "older_risks":   older_risks,

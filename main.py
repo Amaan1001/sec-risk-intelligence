@@ -19,8 +19,8 @@ import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
-load_dotenv("../.env", override=True)
+from utils import load_env
+load_env()
 
 import agent1_fetcher
 import agent2_analyzer

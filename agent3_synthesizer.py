@@ -13,8 +13,8 @@ from openai import OpenAI
 from pathlib import Path
 from datetime import datetime
 
-from dotenv import load_dotenv
-load_dotenv("../.env", override=True)
+from utils import load_env, parse_llm_json
+load_env()
 
 CLIENT = OpenAI()
 MODEL = "gpt-4.1-mini"
@@ -89,8 +89,8 @@ def synthesize(analyzer_output: dict, agent4_output: dict = None) -> dict:
             {"role": "user",   "content": json.dumps(payload, indent=2)},
         ],
     )
-    raw = resp.choices[0].message.content.strip().strip("```json").strip("```").strip()
-    report = json.loads(raw)
+    raw = resp.choices[0].message.content
+    report = parse_llm_json(raw)
     print(f"[Agent 3] Overall Risk Rating: {report.get('overall_rating', 'N/A')}")
     return report
 
@@ -186,7 +186,7 @@ def generate_pdf(report: dict, analyzer_output: dict, out_path: Path,
             table_data = [["Change Type", "Count", "Avg Severity"]]
             for ct, v in counts.items():
                 table_data.append([ct, str(v["count"]), str(v["avg_severity"])])
-            tbl = Table(table_data, colWidths=[3*inch, 1.2*inch, 1.5*inch])
+            tbl = Table(table_data, colWidths=[3.4*inch, 1.2*inch, 1.5*inch])
             tbl.setStyle(TableStyle([
                 ("BACKGROUND",    (0,0), (-1,0), colors.HexColor("#2c3e50")),
                 ("TEXTCOLOR",     (0,0), (-1,0), colors.white),
@@ -198,6 +198,8 @@ def generate_pdf(report: dict, analyzer_output: dict, out_path: Path,
                 ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
                 ("TOPPADDING",    (0,0), (-1,-1), 5),
                 ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                ("LEFTPADDING",   (0,0), (-1,-1), 7),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 7),
             ]))
             story.append(tbl)
             story.append(Spacer(1, 12))
@@ -224,19 +226,31 @@ def generate_pdf(report: dict, analyzer_output: dict, out_path: Path,
                 ))
                 story.append(Spacer(1, 6))
 
-                pred_table_data = [["Risk", "Type", "Impact Type", "Timeframe", "Probability"]]
+                # Dropped "Type" column — redundant (all rows are New/Escalating) and too wide.
+                # Risk title wrapped in Paragraph so long names word-wrap instead of overflow.
+                cell_style = style("Normal", fontSize=8.5, leading=11)
+                hdr_style  = style("Normal", fontSize=8.5, fontName="Helvetica-Bold",
+                                   textColor=colors.white)
+                pred_table_data = [[
+                    Paragraph("Risk", hdr_style),
+                    Paragraph("Risk Type", hdr_style),
+                    Paragraph("Impact Type", hdr_style),
+                    Paragraph("Timeframe", hdr_style),
+                    Paragraph("Probability", hdr_style),
+                ]]
                 for p in show_preds[:15]:
                     prob_pct = f"{round(p.get('probability', 0) * 100)}%"
                     pred_table_data.append([
-                        p.get("risk_title", "")[:55],
-                        p.get("change_type", ""),
-                        p.get("impact_type", "").replace("_", " ").title(),
-                        p.get("timeframe", "").replace("_", " ").title(),
-                        prob_pct,
+                        Paragraph(p.get("risk_title", ""), cell_style),
+                        Paragraph(p.get("change_type", ""), cell_style),
+                        Paragraph(p.get("impact_type", "").replace("_", " ").title(), cell_style),
+                        Paragraph(p.get("timeframe", "").replace("_", " ").title(), cell_style),
+                        Paragraph(prob_pct, cell_style),
                     ])
 
-                col_w = [2.4*inch, 1.1*inch, 1.3*inch, 1.1*inch, 0.8*inch]
-                pred_tbl = Table(pred_table_data, colWidths=col_w)
+                # Total = 6.8" usable; leave ~0.08" breathing room → 6.72" total
+                col_w = [2.6*inch, 1.2*inch, 1.2*inch, 1.0*inch, 0.72*inch]
+                pred_tbl = Table(pred_table_data, colWidths=col_w, repeatRows=1)
 
                 # Color-code probability column
                 prob_styles = [
@@ -247,9 +261,11 @@ def generate_pdf(report: dict, analyzer_output: dict, out_path: Path,
                     ("ROWBACKGROUNDS",(0,1), (-1,-1), [colors.HexColor("#fdfefe"), colors.HexColor("#f4f6f7")]),
                     ("GRID",          (0,0), (-1,-1), 0.4, colors.HexColor("#cccccc")),
                     ("ALIGN",         (1,0), (-1,-1), "CENTER"),
-                    ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-                    ("TOPPADDING",    (0,0), (-1,-1), 4),
-                    ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                    ("VALIGN",        (0,0), (-1,-1), "TOP"),
+                    ("TOPPADDING",    (0,0), (-1,-1), 5),
+                    ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                    ("LEFTPADDING",   (0,0), (-1,-1), 5),
+                    ("RIGHTPADDING",  (0,0), (-1,-1), 5),
                 ]
                 # Red-tint high probability rows
                 for i, p in enumerate(show_preds[:15], start=1):
@@ -324,8 +340,10 @@ def generate_pdf(report: dict, analyzer_output: dict, out_path: Path,
                         ("GRID",          (0,0), (-1,-1), 0.4, colors.HexColor("#cccccc")),
                         ("ALIGN",         (1,0), (-1,-1), "CENTER"),
                         ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
-                        ("TOPPADDING",    (0,0), (-1,-1), 4),
-                        ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                        ("TOPPADDING",    (0,0), (-1,-1), 5),
+                        ("BOTTOMPADDING", (0,0), (-1,-1), 5),
+                        ("LEFTPADDING",   (0,0), (-1,-1), 7),
+                        ("RIGHTPADDING",  (0,0), (-1,-1), 7),
                     ]))
                     story.append(tr_tbl)
                     story.append(Spacer(1, 8))

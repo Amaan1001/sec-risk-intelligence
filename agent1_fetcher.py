@@ -492,7 +492,7 @@ def run(ticker: str) -> dict:
         })
 
     print("[Agent 1] Done.\n")
-    return {"ticker": ticker.upper(), "filings": results}
+    return {"ticker": ticker.upper(), "cik": cik, "filings": results}
 
 
 if __name__ == "__main__":
