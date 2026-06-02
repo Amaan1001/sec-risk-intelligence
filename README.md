@@ -1,5 +1,4 @@
 # SEC Risk Intelligence System
-FE 524 — Prompt Engineering 
 
 ---
 
